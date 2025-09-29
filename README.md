@@ -13,9 +13,7 @@
       padding: 40px;
       line-height: 1.6;
     }
-    h1, h2, h3 {
-      color: #7c9cf5;
-    }
+    h1, h2, h3 { color: #7c9cf5; }
     a { color: #58a6ff; text-decoration: none; }
     a:hover { text-decoration: underline; }
     code {
@@ -30,10 +28,7 @@
       border-radius: 8px;
       overflow-x: auto;
     }
-    .highlight {
-      color: #ffcc66;
-      font-weight: bold;
-    }
+    .highlight { color: #ffcc66; font-weight: bold; }
     .box {
       border: 1px solid rgba(255,255,255,0.15);
       padding: 16px;
@@ -48,10 +43,10 @@
 <h1>✍️ Handwritten Equation → Calculator (ONNX Runtime Web)</h1>
 
 <p>
-An interactive browser demo where you can <span class="highlight">write whole math expressions by hand</span> 
-(e.g., <code>3+4</code>, <code>(12-5)/7</code>, <code>√(9)+2</code>) on a canvas and instantly compute the result.  
+An interactive browser demo where you can <span class="highlight">write math expressions by hand</span> 
+(e.g., <code>3+4</code>, <code>12-5/7</code>, <code>√9+2</code>) on a canvas and instantly compute the result.  
 It uses a tiny PyTorch CNN trained on digits and math symbols, exported to ONNX, and runs entirely 
-client-side with <a href="https://onnxruntime.ai/">onnxruntime-web</a> (WebGPU/WASM).  
+client-side with <a href="https://onnxruntime.ai/">onnxruntime-web</a> (WebGPU/WASM).
 </p>
 
 <p>
@@ -59,7 +54,7 @@ client-side with <a href="https://onnxruntime.ai/">onnxruntime-web</a> (WebGPU/W
 </p>
 
 <div class="box">
-⚡ Apple announced “Math Notes” in 2023 like it was revolutionary — meanwhile, this repo runs the <em>same idea</em> fully in your browser with no iCloud, no locked ecosystem, and under <strong>1 MB</strong> of models. 🙃
+⚡ Apple announced “Math Notes” in 2023 like it was revolutionary — meanwhile, this repo runs the <em>same idea</em> fully in your browser with no iCloud, no locked ecosystem, and under <strong>1&nbsp;MB</strong> of models. 🙃
 </div>
 
 <h2>✨ Features</h2>
@@ -67,7 +62,7 @@ client-side with <a href="https://onnxruntime.ai/">onnxruntime-web</a> (WebGPU/W
   <li>🖊️ <strong>Freehand Equation Input</strong> – Write multi-character math expressions directly on canvas.</li>
   <li>🔍 <strong>Expression Parsing</strong> – Converts recognized digits/symbols into a full equation string.</li>
   <li>⚡ <strong>Instant Calculation</strong> – Evaluates the expression safely in-browser.</li>
-  <li>🧮 <strong>Supported Symbols</strong> – Digits 0–9, operators + - / √, and parentheses ( ).</li>
+  <li>🧮 <strong>Supported Symbols</strong> – Digits 0–9, operators + - / √.</li>
   <li>🌐 <strong>Static Hosting</strong> – Works fully offline or on GitHub Pages (no server needed).</li>
 </ul>
 
@@ -79,7 +74,7 @@ client-side with <a href="https://onnxruntime.ai/">onnxruntime-web</a> (WebGPU/W
 ├── eqsym_tiny_fp32.onnx    # ONNX model (FP32)
 ├── eqsym_tiny_fp16.onnx    # ONNX model (FP16)
 ├── eqsym_tiny_int8.onnx    # Quantized ONNX (INT8, tiny size)
-├── labels.json             # Label mapping (digits + operators + parentheses)
+├── labels.json             # Label mapping (digits + operators)
 └── README.html             # This file
 </code></pre>
 
