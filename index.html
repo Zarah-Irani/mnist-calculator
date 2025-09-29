@@ -64,7 +64,7 @@
 </div>
 
 <script>
-/* ========== Canvas drawing ========== */
+/* ================= Canvas drawing ================= */
 const pad = document.getElementById('pad');
 const ctx = pad.getContext('2d');
 function resetCanvas(){ ctx.fillStyle="#000"; ctx.fillRect(0,0,pad.width,pad.height); }
@@ -83,34 +83,85 @@ pad.addEventListener('touchend',()=>drawing=false);
 document.getElementById('clear').onclick = ()=> resetCanvas();
 document.getElementById('brush').oninput = e => brush=+e.target.value;
 
-/* ========== Model & labels ========== */
-let session=null, labels=null;
+/* ================= Robust loader for GitHub Pages ================= */
 const statusEl = document.getElementById('status');
-async function loadLabels(){ const r=await fetch('labels.json'); labels=await r.json(); }
-async function tryLoad(paths){
-  for(const p of paths){
-    try{
-      statusEl.textContent = `loading ${p}…`;
-      session = await ort.InferenceSession.create(p,{executionProviders:['webgpu','wasm'],graphOptimizationLevel:'all'});
-      statusEl.textContent = `model ready ✅ (${p})`;
-      return;
-    }catch(e){ console.warn('failed',p,e); }
-  }
-  throw new Error('No model could be loaded');
+function setStatus(msg) { statusEl.textContent = msg; console.log(msg); }
+
+// Make ORT WASM reliable on Pages
+ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
+ort.env.wasm.numThreads = 1;
+
+async function headOk(url) {
+  const r = await fetch(url, { method: "HEAD", cache: "no-store" });
+  if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText} for ${url}`);
+  return url;
 }
-(async()=>{
-  await loadLabels();
-  // Prefer FP16 for accuracy, then INT8, then FP32
-  await tryLoad(['eqsym_tiny_fp16.onnx','eqsym_tiny_int8.onnx','eqsym_tiny_fp32.onnx']);
+
+async function loadLabels() {
+  setStatus("loading labels.json…");
+  const r = await fetch("labels.json", { cache: "no-store" });
+  if (!r.ok) throw new Error(`labels.json HTTP ${r.status}`);
+  return await r.json();
+}
+
+async function loadSession() {
+  const candidates = [
+    "eqsym_tiny_fp16.onnx",
+    "eqsym_tiny_int8.onnx",
+    "eqsym_tiny_fp32.onnx",
+  ];
+
+  // verify existence (good diagnostics if path wrong)
+  let chosen = null, lastErr = null;
+  for (const p of candidates) {
+    try { await headOk(p); chosen = p; break; }
+    catch (e) { console.warn("HEAD fail:", p, e); lastErr = e; }
+  }
+  if (!chosen) {
+    setStatus("❌ Could not find any ONNX file (check file names/paths).");
+    throw lastErr || new Error("No .onnx found");
+  }
+
+  // Try WASM first for reliability; fall back to WebGPU
+  try {
+    setStatus(`loading (wasm) ${chosen}…`);
+    const s = await ort.InferenceSession.create(chosen, {
+      executionProviders: ["wasm"],
+      graphOptimizationLevel: "all",
+    });
+    setStatus(`model ready ✅ (WASM, ${chosen})`);
+    return s;
+  } catch (e1) {
+    console.warn("WASM failed, trying WebGPU:", e1);
+    setStatus(`loading (webgpu) ${chosen}…`);
+    const s2 = await ort.InferenceSession.create(chosen, {
+      executionProviders: ["webgpu","wasm"],
+      graphOptimizationLevel: "all",
+    });
+    setStatus(`model ready ✅ (WebGPU, ${chosen})`);
+    return s2;
+  }
+}
+
+let session = null, labels = null;
+
+(async () => {
+  try {
+    labels  = await loadLabels();
+    session = await loadSession();
+  } catch (e) {
+    setStatus("❌ " + (e?.message || e));
+    console.error(e);
+  }
 })();
 
-/* ========== Segmentation helpers ========== */
+/* ================= Segmentation helpers ================= */
 function binarize(imgData, thresh=0.28, invert=false){
   const {width:W, height:H, data} = imgData;
   const bin = new Uint8Array(W*H);
   for(let i=0;i<W*H;i++){
     const r=data[i*4], g=data[i*4+1], b=data[i*4+2];
-    let v=(r+g+b)/3/255;            // brightness 0..1 (white=1)
+    let v=(r+g+b)/3/255;            // 0..1 (white=1)
     if(invert) v = 1 - v;
     bin[i] = v>thresh ? 1 : 0;
   }
@@ -139,24 +190,41 @@ function components({W,H,bin}){
         }
       }
     }
-    if(area>=30) boxes.push({x:minx,y=miny,w:maxx-minx+1,h:maxy-miny+1,area});
+    if(area>=30) boxes.push({x:minx,y:miny,w:maxx-minx+1,h:maxy-miny+1,area});
     lab++;
   }
   boxes.sort((a,b)=>a.x-b.x);
-  // Merge close neighbors horizontally (bridges broken strokes)
+  // merge nearby boxes horizontally (bridges broken strokes)
   const merged=[];
   for(const b of boxes){
     if(!merged.length){ merged.push(b); continue; }
     const prev=merged[merged.length-1];
     const gap = b.x - (prev.x+prev.w);
     const overlapY = !(b.y > prev.y+prev.h || prev.y > b.y+b.h);
-    if(gap<=10 && overlapY){ // looser merge than before
+    if(gap<=10 && overlapY){
       const nx=Math.min(prev.x,b.x), ny=Math.min(prev.y,b.y);
       const rx=Math.max(prev.x+prev.w, b.x+b.w), ry=Math.max(prev.y+prev.h, b.y+b.h);
       prev.x=nx; prev.y=ny; prev.w=rx-nx; prev.h=ry-ny;
     }else merged.push(b);
   }
   return merged;
+}
+function centerOfMassShift(canvas){
+  const g = canvas.getContext('2d');
+  const d = g.getImageData(0,0,28,28);
+  let sum=0,sx=0,sy=0;
+  for(let y=0;y<28;y++)for(let x=0;x<28;x++){
+    const i=(y*28+x)*4;
+    const v=(d.data[i]+d.data[i+1]+d.data[i+2])/3; // 0..255
+    sum+=v; sx+=x*v; sy+=y*v;
+  }
+  if(sum<1) return;
+  const cx=sx/sum, cy=sy/sum;
+  const dx=Math.round(14-cx), dy=Math.round(14-cy);
+  if(dx===0 && dy===0) return;
+  const tmp=document.createElement('canvas'); tmp.width=28; tmp.height=28;
+  tmp.getContext('2d').drawImage(canvas,dx,dy);
+  g.clearRect(0,0,28,28); g.drawImage(tmp,0,0);
 }
 function cropTo28(imgData, box, pad=8){
   const {width:W, height:H, data} = imgData;
@@ -176,7 +244,7 @@ function cropTo28(imgData, box, pad=8){
   const dst=document.createElement('canvas'); dst.width=28; dst.height=28;
   const dctx=dst.getContext('2d');
   dctx.fillStyle="#000"; dctx.fillRect(0,0,28,28);
-  dctx.imageSmoothingEnabled = false; // IMPORTANT: crisp downscale
+  dctx.imageSmoothingEnabled = false; // crisp downscale
 
   const scale = Math.min(28/cw, 28/ch);
   const rw = Math.max(1, Math.floor(cw*scale)), rh = Math.max(1, Math.floor(ch*scale));
@@ -185,23 +253,6 @@ function cropTo28(imgData, box, pad=8){
 
   centerOfMassShift(dst);  // MNIST-like centering
   return dst;
-}
-function centerOfMassShift(canvas){
-  const g = canvas.getContext('2d');
-  const d = g.getImageData(0,0,28,28);
-  let sum=0,sx=0,sy=0;
-  for(let y=0;y<28;y++)for(let x=0;x<28;x++){
-    const i=(y*28+x)*4;
-    const v=(d.data[i]+d.data[i+1]+d.data[i+2])/3; // 0..255, white ink
-    sum+=v; sx+=x*v; sy+=y*v;
-  }
-  if(sum<1) return;
-  const cx=sx/sum, cy=sy/sum;
-  const dx=Math.round(14-cx), dy=Math.round(14-cy);
-  if(dx===0 && dy===0) return;
-  const tmp=document.createElement('canvas'); tmp.width=28; tmp.height=28;
-  tmp.getContext('2d').drawImage(canvas,dx,dy);
-  g.clearRect(0,0,28,28); g.drawImage(tmp,0,0);
 }
 function tensorFrom28(canvas28){
   const mean=0.1307, std=0.3081;
@@ -217,7 +268,7 @@ function tensorFrom28(canvas28){
 }
 function softmax(a){ const m=Math.max(...a); const e=a.map(v=>Math.exp(v-m)); const s=e.reduce((x,y)=>x+y,0); return e.map(v=>v/s); }
 
-/* ========== Compute pipeline (whole canvas) ========== */
+/* ================= Compute whole-canvas ================= */
 const exprEl = document.getElementById('expr');
 const ansEl  = document.getElementById('ans');
 const charsEl= document.getElementById('chars');
@@ -228,7 +279,8 @@ document.getElementById('compute').onclick = async ()=>{
   const img = ctx.getImageData(0,0,pad.width,pad.height);
   const bin = binarize(img, 0.28, document.getElementById('invert').checked);
   const boxes = components(bin);
-  // draw boxes (overlay)
+
+  // draw boxes overlay
   if(showBoxes.checked){
     ctx.putImageData(img,0,0);
     ctx.save(); ctx.strokeStyle="#44f1a8aa"; ctx.lineWidth=3;
@@ -244,7 +296,7 @@ document.getElementById('compute').onclick = async ()=>{
     const logits = Array.from(out[session.outputNames[0]].data);
     const probs = softmax(logits);
     const best = probs.indexOf(Math.max(...probs));
-    const label = labels[String(best)] ?? '?';
+    const label = (labels && labels[String(best)]) ? labels[String(best)] : '?';
 
     if(tokens.length && /^[0-9]+$/.test(tokens[tokens.length-1]) && /^[0-9]$/.test(label)){
       tokens[tokens.length-1] += label;
@@ -252,8 +304,8 @@ document.getElementById('compute').onclick = async ()=>{
       tokens.push(label);
     }
 
-    // show small tile + label
-    const tile = document.createElement('div'); tile.className='tile';
+    // show preview tile
+    const tile=document.createElement('div'); tile.className='tile';
     const canv=document.createElement('canvas'); canv.width=28; canv.height=28;
     canv.getContext('2d').drawImage(c28,0,0);
     const cap=document.createElement('div'); cap.className='mini'; cap.textContent=label;
@@ -272,7 +324,7 @@ document.getElementById('compute').onclick = async ()=>{
   }
 };
 
-/* --- Safe evaluator: + - / ( ) and unary √ --- */
+/* === Safe evaluator: + - / ( ) and unary √ === */
 function evaluateTokens(toks){
   if(!toks.length) throw new Error('empty');
   const valid = new Set(['+','-','/','√','(',')']);
