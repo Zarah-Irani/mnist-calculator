@@ -2,320 +2,328 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Handwritten Equation Calculator (ONNX)</title>
+  <title>Handwritten Expression → Answer (ONNX)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
   <style>
     :root{--bg:#0f1220;--card:#171a2b;--accent:#7c9cf5;--muted:#9aa3b2;--text:#eef1f7;--ok:#6ee7b7;}
     *{box-sizing:border-box}
-    body{margin:0;padding:24px;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial;color:var(--text);background:radial-gradient(1200px 600px at 10% -10%, #1b2145 0%, #0f1220 55%) fixed;}
+    body{margin:0;padding:24px;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial;color:var(--text);background:#0f1220;}
     .wrap{max-width:1100px;margin:0 auto;display:grid;gap:18px}
     .row{display:flex;flex-wrap:wrap;gap:16px;align-items:stretch}
     .card{background:var(--card);border:1px solid rgba(124,156,245,.2);border-radius:16px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
-    .left{flex:1 1 460px;min-width:320px}
-    .right{flex:1 1 420px;min-width:300px}
     h1{margin:0 0 6px}
     .muted{color:var(--muted)}
-    canvas#pad{width:360px;height:360px;max-width:100%;background:#0b0d17;border-radius:18px;border:1px dashed rgba(255,255,255,.15);touch-action:none;cursor:crosshair}
-    .mini{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px}
-    .mini canvas{width:84px;height:84px;image-rendering:pixelated;background:#0b0d17;border-radius:8px;border:1px solid rgba(255,255,255,.1)}
+    canvas#pad{width:720px;height:180px;max-width:100%;background:#0b0d17;border-radius:18px;border:1px dashed rgba(255,255,255,.15);touch-action:none;cursor:crosshair}
     .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
     button,select,input[type="range"]{background:#101426;color:#eaf0ff;border:1px solid rgba(124,156,245,.35);padding:10px 12px;border-radius:12px;cursor:pointer;font-weight:600}
     button:hover{border-color:var(--accent)}
-    .badge{display:inline-flex;gap:8px;align-items:center;background:#0e1326;border:1px solid rgba(124,156,245,.25);padding:6px 10px;border-radius:999px;font-size:12px}
-    #probs{display:grid;gap:6px}
-    .bar{display:grid;grid-template-columns:30px 1fr auto;align-items:center;gap:10px}
-    .track{height:10px;background:#0f1430;border-radius:999px;position:relative;overflow:hidden;border:1px solid rgba(124,156,245,.2)}
-    .fill{position:absolute;inset:0 auto 0 0;width:0%;background:linear-gradient(90deg,var(--accent),#8ef2ff)}
+    .output{display:grid;gap:10px}
     .expr{font-size:22px;background:#0b0f23;border:1px solid rgba(124,156,245,.25);padding:12px;border-radius:12px;word-break:break-all;min-height:54px}
-    .grid{display:grid;gap:10px}
     .pill{padding:6px 10px;border:1px solid rgba(124,156,245,.3);border-radius:999px;background:#0f1430}
-    .ok{color:var(--ok)}
-    .note{font-size:12px;color:var(--muted)}
+    .grid{display:grid;gap:10px}
+    .mini{font-size:12px;color:var(--muted)}
+    .dbg{display:flex;flex-wrap:wrap;gap:8px}
+    .dbg canvas{width:56px;height:56px;image-rendering:pixelated;background:#0b0d17;border-radius:8px;border:1px solid rgba(255,255,255,.1)}
   </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="row">
-    <div style="flex:1 1 auto">
-      <div class="badge">ONNX Runtime Web • <span id="backend">loading…</span></div>
-      <h1>Handwritten Equation Calculator</h1>
-      <div class="muted">Draw one symbol at a time (digits 0–9, +, −, /, √, (, )) → append to the expression → evaluate.</div>
-    </div>
-    <div class="card" style="display:flex;gap:8px;align-items:center">
-      <label for="modelSel" class="muted">Model:</label>
-      <select id="modelSel">
-        <option>eqsym_tiny_int8.onnx</option>
-        <option>eqsym_tiny_fp16.onnx</option>
-        <option>eqsym_tiny_fp32.onnx</option>
-      </select>
-      <button id="reload">Load</button>
-      <span id="status" class="muted">loading model…</span>
-    </div>
+  <div>
+    <h1>Handwritten Expression → Answer</h1>
+    <div class="muted">Write the whole expression (e.g., <b>3+4</b>, <b>(12-5)/7</b>, <b>√(9)+2</b>) on one canvas. Click Compute.</div>
   </div>
 
   <div class="row">
-    <div class="left card">
-      <h3>Draw a symbol</h3>
-      <canvas id="pad" width="360" height="360"></canvas>
+    <div class="card" style="flex:1 1 720px;min-width:320px">
+      <h3>Draw expression</h3>
+      <canvas id="pad" width="1200" height="300"></canvas>
       <div class="controls">
-        <button id="predict">Predict</button>
-        <button id="append">Append</button>
+        <button id="compute">Compute</button>
         <button id="clear">Clear</button>
-        <button id="undo">Undo</button>
-        <label class="mini">Brush <input id="brush" type="range" min="8" max="36" step="1" value="24" /></label>
+        <label>Brush <input id="brush" type="range" min="8" max="36" step="1" value="24" /></label>
+        <label><input type="checkbox" id="showBoxes" checked /> Show char boxes</label>
+        <span id="status" class="muted">loading model…</span>
       </div>
-      <div class="mini" style="margin-top:10px">
-        <canvas id="thumb" width="28" height="28" title="28×28 preview"></canvas>
-        28×28 preview (what the model sees)
-      </div>
-      <div class="note" style="margin-top:8px">Tip: write thick & centered. We normalize like MNIST (white ink on black background).</div>
+      <div class="mini">Tip: write thick & centered baseline. Supported: digits 0–9, +, −, /, √, ( ).</div>
     </div>
 
-    <div class="right card grid">
-      <div>
-        <h3>Top Prediction</h3>
-        <div class="badge">Token: <span id="top" class="ok">—</span></div>
+    <div class="card output" style="flex:1 1 360px;min-width:300px">
+      <div class="grid">
+        <div class="pill">Expression: <span id="expr">—</span></div>
+        <div class="pill">Answer: <span id="ans">—</span></div>
       </div>
-      <div id="probs"></div>
-
       <div>
-        <h3>Expression</h3>
-        <div id="expr" class="expr"></div>
-        <div class="controls">
-          <button id="evaluate">Evaluate</button>
-          <button id="backspace">Backspace</button>
-          <button id="clearExpr">Clear Expression</button>
-        </div>
-        <div class="grid">
-          <div class="pill">Result: <span id="result">—</span></div>
-          <div class="note">Supported: digits 0–9, +, −, /, √, (, ). Use √(x) or √9. Division uses “/”.</div>
-        </div>
+        <h4>Detected characters</h4>
+        <div id="chars" class="dbg"></div>
       </div>
     </div>
   </div>
 </div>
 
 <script>
-/* ------------------ Canvas ------------------ */
+/* ========== Canvas drawing ========== */
 const pad = document.getElementById('pad');
 const ctx = pad.getContext('2d');
-const thumb = document.getElementById('thumb').getContext('2d');
-const statusEl = document.getElementById('status');
-const backendEl = document.getElementById('backend');
-const modelSel = document.getElementById('modelSel');
-const topEl = document.getElementById('top');
-const probsEl = document.getElementById('probs');
-const exprEl = document.getElementById('expr');
-const resultEl = document.getElementById('result');
-
-function resetCanvas(){ ctx.fillStyle = "#000"; ctx.fillRect(0,0,pad.width,pad.height); }
+function resetCanvas(){ ctx.fillStyle="#000"; ctx.fillRect(0,0,pad.width,pad.height); }
 resetCanvas();
+let drawing=false, last=null, brush=24;
+function pos(e){ const r=pad.getBoundingClientRect(); const p=e.touches?e.touches[0]:e;
+  return {x:(p.clientX-r.left)*(pad.width/r.width), y:(p.clientY-r.top)*(pad.height/r.height)} }
+function stroke(a,b){ ctx.lineJoin="round"; ctx.lineCap="round"; ctx.strokeStyle="#fff"; ctx.lineWidth=brush;
+  ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+pad.addEventListener('mousedown',e=>{drawing=true; last=pos(e); stroke(last,last);});
+window.addEventListener('mousemove',e=>{ if(!drawing) return; const p=pos(e); stroke(last,p); last=p; });
+window.addEventListener('mouseup',()=>drawing=false);
+pad.addEventListener('touchstart',e=>{drawing=true; last=pos(e); stroke(last,last); e.preventDefault()},{passive:false});
+pad.addEventListener('touchmove',e=>{ if(!drawing) return; const p=pos(e); stroke(last,p); last=p; e.preventDefault()},{passive:false});
+pad.addEventListener('touchend',()=>drawing=false);
 
-let drawing=false, last=null, brush=24, undoStack=[];
-function getPos(e){
-  const r = pad.getBoundingClientRect();
-  const p = e.touches ? e.touches[0] : e;
-  return { x: (p.clientX - r.left) * (pad.width/r.width),
-           y: (p.clientY - r.top) * (pad.height/r.height) };
-}
-function stroke(a,b){
-  ctx.lineJoin="round"; ctx.lineCap="round"; ctx.strokeStyle="#fff"; ctx.lineWidth=brush;
-  ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
-}
-function pushUndo(){ undoStack.push(ctx.getImageData(0,0,pad.width,pad.height)); if(undoStack.length>20) undoStack.shift(); }
-function popUndo(){ if(!undoStack.length) return; ctx.putImageData(undoStack.pop(),0,0); renderPreview(); }
+document.getElementById('clear').onclick = ()=> resetCanvas();
+document.getElementById('brush').oninput = e => brush=+e.target.value;
 
-pad.addEventListener('mousedown',(e)=>{drawing=true; last=getPos(e); pushUndo(); stroke(last,last); e.preventDefault();});
-window.addEventListener('mousemove',(e)=>{if(!drawing) return; const p=getPos(e); stroke(last,p); last=p; e.preventDefault();});
-window.addEventListener('mouseup',()=>{drawing=false; renderPreview();});
-pad.addEventListener('touchstart',(e)=>{drawing=true; last=getPos(e); pushUndo(); stroke(last,last); e.preventDefault();},{passive:false});
-pad.addEventListener('touchmove',(e)=>{if(!drawing) return; const p=getPos(e); stroke(last,p); last=p; e.preventDefault();},{passive:false});
-pad.addEventListener('touchend',()=>{drawing=false; renderPreview();});
-
-document.getElementById('clear').onclick=()=>{resetCanvas(); renderPreview();};
-document.getElementById('undo').onclick =()=>{popUndo();};
-document.getElementById('brush').oninput=(e)=>{brush=+e.target.value;};
-
-/* ------------------ Model Loading ------------------ */
+/* ========== Model load ========== */
 let session=null, labels=null;
-async function loadLabels(){ const r = await fetch('labels.json'); labels = await r.json(); }
+const statusEl = document.getElementById('status');
+async function loadLabels(){ const r=await fetch('labels.json'); labels=await r.json(); }
 async function tryLoad(paths){
   for(const p of paths){
     try{
       statusEl.textContent = `loading ${p}…`;
-      session = await ort.InferenceSession.create(p, {executionProviders:['webgpu','wasm'], graphOptimizationLevel:'all'});
+      session = await ort.InferenceSession.create(p,{executionProviders:['webgpu','wasm'],graphOptimizationLevel:'all'});
       statusEl.textContent = `model ready ✅ (${p})`;
-      return p;
-    }catch(e){ console.warn('Failed to load', p, e); }
+      return;
+    }catch(e){ console.warn('failed',p,e); }
   }
-  throw new Error('No model could be loaded.');
+  throw new Error('No model could be loaded');
 }
-async function loadModel(preferred){ 
+(async()=>{
   await loadLabels();
-  const used = await tryLoad(preferred);
-  backendEl.textContent = (navigator.gpu ? 'WebGPU' : 'WASM') + ' • ' + used;
-}
-document.getElementById('reload').onclick = ()=> loadModel([modelSel.value]);
+  await tryLoad(['eqsym_tiny_int8.onnx','eqsym_tiny_fp16.onnx','eqsym_tiny_fp32.onnx']);
+})();
 
-/* ------------------ Preprocess / Predict ------------------ */
-function renderPreview(){
-  const s = document.createElement('canvas'); s.width=28; s.height=28;
-  s.getContext('2d').drawImage(pad,0,0,28,28);
-  thumb.clearRect(0,0,28,28); thumb.drawImage(s,0,0);
+/* ========== Segmentation (one pass over whole canvas) ========== */
+/* Steps:
+   1) binarize image to white ink on black
+   2) find connected components (8-connected)
+   3) build bounding boxes, sorted left->right
+   4) pad each box, resize to 28x28, normalize like MNIST
+*/
+function binarize(imgData, thresh=0.5){
+  const {width:W, height:H, data} = imgData;
+  const bin = new Uint8Array(W*H);
+  for(let i=0;i<W*H;i++){
+    const r=data[i*4], g=data[i*4+1], b=data[i*4+2];
+    const v=(r+g+b)/3/255; // 0..1, white=ink
+    bin[i] = v>thresh ? 1 : 0;
+  }
+  return {W,H,bin};
 }
-function preprocess(){
-  const s = document.createElement('canvas'); s.width=28; s.height=28;
-  const sctx = s.getContext('2d'); sctx.drawImage(pad,0,0,28,28);
-  const d = sctx.getImageData(0,0,28,28).data;
+function components({W,H,bin}){
+  const labels = new Int32Array(W*H).fill(-1);
+  const boxes = [];
+  let lab=0;
+  const qx=new Int32Array(W*H), qy=new Int32Array(W*H);
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++){
+      const idx=y*W+x;
+      if(!bin[idx] || labels[idx]!==-1) continue;
+      // BFS
+      let head=0,tail=0;
+      qx[tail]=x; qy[tail]=y; tail++;
+      labels[idx]=lab;
+      let minx=x,maxx=x,miny=y,maxy=y, area=0;
+      while(head<tail){
+        const cx=qx[head], cy=qy[head]; head++; area++;
+        // neighbors 8-connect
+        for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+          if(dx===0&&dy===0) continue;
+          const nx=cx+dx, ny=cy+dy;
+          if(nx<0||ny<0||nx>=W||ny>=H) continue;
+          const nidx=ny*W+nx;
+          if(bin[nidx] && labels[nidx]===-1){
+            labels[nidx]=lab; qx[tail]=nx; qy[tail]=ny; tail++;
+            if(nx<minx)minx=nx; if(nx>maxx)maxx=nx; if(ny<miny)miny=ny; if(ny>maxy)maxy=ny;
+          }
+        }
+      }
+      // filter tiny specks
+      if(area>=30){
+        boxes.push({x:minx,y:miny,w:maxx-minx+1,h:maxy-miny+1,area});
+        lab++;
+      }
+    }
+  }
+  // merge boxes that are too close horizontally (handles broken strokes)
+  boxes.sort((a,b)=>a.x-b.x);
+  const merged=[];
+  for(const b of boxes){
+    if(!merged.length){ merged.push(b); continue; }
+    const prev=merged[merged.length-1];
+    const gap = b.x - (prev.x+prev.w);
+    const overlapY = !(b.y > prev.y+prev.h || prev.y > b.y+b.h);
+    if(gap<=8 && overlapY){ // small gap -> merge
+      const nx=Math.min(prev.x,b.x);
+      const ny=Math.min(prev.y,b.y);
+      const rx=Math.max(prev.x+prev.w, b.x+b.w);
+      const ry=Math.max(prev.y+prev.h, b.y+b.h);
+      prev.x=nx; prev.y=ny; prev.w=rx-nx; prev.h=ry-ny;
+    }else{
+      merged.push(b);
+    }
+  }
+  return merged;
+}
+function cropTo28(imgData, box, pad=6){
+  const {width:W, height:H, data} = imgData;
+  const sx = Math.max(0, box.x - pad);
+  const sy = Math.max(0, box.y - pad);
+  const ex = Math.min(W, box.x + box.w + pad);
+  const ey = Math.min(H, box.y + box.h + pad);
+  const cw = ex - sx, ch = ey - sy;
+
+  // put into a temp canvas, then letterbox to 28x28
+  const tmp=document.createElement('canvas'); tmp.width=cw; tmp.height=ch;
+  const tctx=tmp.getContext('2d');
+  const src = new ImageData(new Uint8ClampedArray(cw*ch*4), cw, ch);
+  for(let y=0;y<ch;y++){
+    for(let x=0;x<cw;x++){
+      const di = ((sy+y)*W + (sx+x)) * 4;
+      const oi = (y*cw + x)*4;
+      src.data[oi]   = data[di];
+      src.data[oi+1] = data[di+1];
+      src.data[oi+2] = data[di+2];
+      src.data[oi+3] = 255;
+    }
+  }
+  tctx.putImageData(src,0,0);
+
+  // letterbox
+  const dst=document.createElement('canvas'); dst.width=28; dst.height=28;
+  const dctx=dst.getContext('2d');
+  dctx.fillStyle="#000"; dctx.fillRect(0,0,28,28);
+  const scale = Math.min(28/cw, 28/ch);
+  const rw = Math.max(1, Math.floor(cw*scale));
+  const rh = Math.max(1, Math.floor(ch*scale));
+  const dx = Math.floor((28-rw)/2);
+  const dy = Math.floor((28-rh)/2);
+  dctx.imageSmoothingEnabled = true;
+  dctx.drawImage(tmp, 0,0,cw,ch, dx,dy,rw,rh);
+  return dst;
+}
+function tensorFrom28(canvas28){
   const mean=0.1307, std=0.3081;
+  const g = canvas28.getContext('2d').getImageData(0,0,28,28).data;
   const arr = new Float32Array(1*1*28*28);
   for(let i=0;i<28*28;i++){
-    const r=d[i*4], g=d[i*4+1], b=d[i*4+2];
-    let v=(r+g+b)/3/255; // white ink on black bg
+    const r=g[i*4], b=g[i*4+2], y=g[i*4+1];
+    let v=(r+y+b)/3/255;               // 0..1 white ink
     arr[i]=(v-mean)/std;
   }
   return new ort.Tensor('float32', arr, [1,1,28,28]);
 }
-function softmax(logits){
-  const m = Math.max(...logits);
-  const ex = logits.map(v=>Math.exp(v-m));
-  const s = ex.reduce((a,b)=>a+b,0);
-  return ex.map(v=>v/s);
-}
-async function predictOnce(){
-  if(!session){ alert('Model not loaded yet'); return; }
-  const input = preprocess();
-  const out = await session.run({[session.inputNames[0]]:input});
-  const logits = Array.from(out[session.outputNames[0]].data);
-  const probs = softmax(logits);
-  const bestI = probs.indexOf(Math.max(...probs));
-  const token = labels[String(bestI)] ?? '?';
-  showProbs(probs, token);
-  return {token, probs};
-}
-function showProbs(probs, token){
-  topEl.textContent = `${token} (${(Math.max(...probs)*100).toFixed(1)}%)`;
-  probsEl.innerHTML='';
-  for(let i=0;i<probs.length;i++){
-    const row=document.createElement('div'); row.className='bar';
-    const lab=document.createElement('div'); lab.textContent = labels[String(i)];
-    const track=document.createElement('div'); track.className='track';
-    const fill=document.createElement('div'); fill.className='fill'; fill.style.width=(probs[i]*100).toFixed(1)+'%';
-    track.appendChild(fill);
-    const pct=document.createElement('div'); pct.textContent=(probs[i]*100).toFixed(1)+'%';
-    row.appendChild(lab); row.appendChild(track); row.appendChild(pct);
-    probsEl.appendChild(row);
-  }
-}
+function softmax(a){ const m=Math.max(...a); const e=a.map(v=>Math.exp(v-m)); const s=e.reduce((x,y)=>x+y,0); return e.map(v=>v/s); }
 
-/* ------------------ Expression build & evaluation ------------------ */
-let tokens = [];
-function renderExpr(){ exprEl.textContent = tokens.join(''); }
-function appendToken(t){
-  // merge consecutive digits into a number string
-  if (tokens.length && /[0-9]/.test(t) && /^[0-9]+$/.test(tokens[tokens.length-1])) {
-    tokens[tokens.length-1] += t;
-  } else {
-    tokens.push(t);
-  }
-  renderExpr();
-}
+/* ========== Compute pipeline (whole canvas) ========== */
+const exprEl = document.getElementById('expr');
+const ansEl  = document.getElementById('ans');
+const charsEl= document.getElementById('chars');
+const showBoxes = document.getElementById('showBoxes');
 
-document.getElementById('predict').onclick = async()=>{ await predictOnce(); };
-document.getElementById('append').onclick  = async()=>{
-  const p = await predictOnce(); if(!p) return;
-  appendToken(p.token);
-  resetCanvas(); renderPreview();
-};
-document.getElementById('backspace').onclick = ()=>{
-  if(!tokens.length) return;
-  const last = tokens[tokens.length-1];
-  if (/^[0-9]+$/.test(last) && last.length>1) tokens[tokens.length-1]=last.slice(0,-1);
-  else tokens.pop();
-  renderExpr();
-};
-document.getElementById('clearExpr').onclick=()=>{ tokens=[]; renderExpr(); resultEl.textContent='—'; };
-document.getElementById('evaluate').onclick = ()=>{ 
-  try{ const val = evaluateTokens(tokens); resultEl.textContent = String(val); }
-  catch(e){ resultEl.textContent = 'Error'; console.error(e); }
+document.getElementById('compute').onclick = async ()=>{
+  if(!session){ alert('Model not ready'); return; }
+  // 1) get image, binarize, components
+  const img = ctx.getImageData(0,0,pad.width,pad.height);
+  const bin = binarize(img, 0.35);                // threshold
+  const boxes = components(bin);                   // left→right
+  // optional draw boxes
+  ctx.putImageData(img,0,0); // reset
+  if(showBoxes.checked){
+    ctx.save(); ctx.strokeStyle="#44f1a8aa"; ctx.lineWidth=3;
+    for(const b of boxes){ ctx.strokeRect(b.x,b.y,b.w,b.h); }
+    ctx.restore();
+  }
+
+  // 2) classify each box
+  charsEl.innerHTML=''; let tokens=[];
+  for(const b of boxes){
+    const c28 = cropTo28(img, b, 6);
+    const tensor = tensorFrom28(c28);
+    const out = await session.run({[session.inputNames[0]]:tensor});
+    const logits = Array.from(out[session.outputNames[0]].data);
+    const probs = softmax(logits);
+    const best = probs.indexOf(Math.max(...probs));
+    const label = labels[String(best)] ?? '?';
+
+    // merge consecutive digits into multi-digit numbers
+    if(tokens.length && /^[0-9]+$/.test(tokens[tokens.length-1]) && /^[0-9]$/.test(label)){
+      tokens[tokens.length-1] += label;
+    } else {
+      tokens.push(label);
+    }
+
+    // show tiny debug tile
+    const tile=document.createElement('div');
+    const canv=document.createElement('canvas'); canv.width=28; canv.height=28;
+    canv.getContext('2d').drawImage(c28,0,0);
+    tile.appendChild(canv);
+    const cap=document.createElement('div'); cap.className='mini'; cap.textContent=label;
+    charsEl.appendChild(canv); charsEl.appendChild(cap);
+  }
+
+  // 3) expression string
+  const exprStr = tokens.join('');
+  exprEl.textContent = exprStr || '—';
+
+  // 4) evaluate safely
+  try{
+    const value = evaluateTokens(tokens);
+    ansEl.textContent = String(value);
+  }catch(e){
+    ansEl.textContent = 'Error';
+    console.error(e);
+  }
 };
 
 /* --- Safe evaluator: shunting-yard (supports + - /, parentheses, unary √) --- */
 function evaluateTokens(toks){
-  if (!toks.length) throw new Error('empty');
-  // Convert tokens to a flat list, validate
+  if(!toks.length) throw new Error('empty');
   const valid = new Set(['+','-','/','√','(',')']);
-  const outTokens = [];
+  const out = [];
   toks.forEach(t=>{
-    if (/^[0-9]+$/.test(t)) outTokens.push({type:'num', value: parseFloat(t)});
-    else if (valid.has(t)) outTokens.push({type:'op', value:t});
+    if(/^[0-9]+$/.test(t)) out.push({type:'num', value:parseFloat(t)});
+    else if(valid.has(t)) out.push({type:'op', value:t});
     else throw new Error('bad token '+t);
   });
-
-  // Shunting-yard to RPN
-  const prec = {'+':1,'-':1,'/':2,'√':3};                 // √ highest
-  const rightAssoc = new Set(['√']);                      // unary prefix
-  const output=[]; const opstack=[];
-  for (let i=0;i<outTokens.length;i++){
-    const tk = outTokens[i];
-    if (tk.type==='num') output.push(tk);
-    else if (tk.value==='(') opstack.push(tk.value);
-    else if (tk.value===')'){
-      while(opstack.length && opstack[opstack.length-1]!=='(') output.push({type:'op', value: opstack.pop()});
-      if(!opstack.length) throw new Error('mismatch )');
-      opstack.pop(); // pop '('
-    } else {
-      // operator
-      const o1 = tk.value;
-      while(opstack.length){
-        const o2 = opstack[opstack.length-1];
-        if (o2==='(') break;
-        if ((!rightAssoc.has(o1) && prec[o1] <= prec[o2]) || (rightAssoc.has(o1) && prec[o1] < prec[o2])) {
-          output.push({type:'op', value: opstack.pop()});
-        } else break;
+  const prec={'+':1,'-':1,'/':2,'√':3}, right=new Set(['√']);
+  const output=[], ops=[];
+  for(const tk of out){
+    if(tk.type==='num') output.push(tk);
+    else if(tk.value==='(') ops.push('(');
+    else if(tk.value===')'){
+      while(ops.length && ops[ops.length-1]!=='(') output.push({type:'op',value:ops.pop()});
+      if(!ops.length) throw new Error('paren mismatch'); ops.pop();
+    }else{
+      const o1=tk.value;
+      while(ops.length){
+        const o2=ops[ops.length-1]; if(o2==='(') break;
+        if((!right.has(o1) && prec[o1] <= prec[o2]) || (right.has(o1) && prec[o1] < prec[o2])){
+          output.push({type:'op', value:ops.pop()});
+        }else break;
       }
-      opstack.push(o1);
+      ops.push(o1);
     }
   }
-  while(opstack.length){
-    const o=opstack.pop();
-    if (o==='('||o===')') throw new Error('mismatch');
-    output.push({type:'op', value:o});
-  }
-
-  // Evaluate RPN
+  while(ops.length){ const o=ops.pop(); if(o==='(') throw new Error('paren'); output.push({type:'op',value:o}); }
   const st=[];
   for(const t of output){
-    if (t.type==='num') st.push(t.value);
-    else if (t.value==='√'){
-      if (st.length<1) throw new Error('sqrt stack');
-      const x = st.pop();
-      if (x < 0) throw new Error('sqrt negative');
-      st.push(Math.sqrt(x));
-    } else {
-      if (st.length<2) throw new Error('binop stack');
-      const b = st.pop(), a = st.pop();
-      if (t.value==='+') st.push(a+b);
-      else if (t.value==='-') st.push(a-b);
-      else if (t.value==='/') { if (b===0) throw new Error('div0'); st.push(a/b); }
-    }
+    if(t.type==='num') st.push(t.value);
+    else if(t.value==='√'){ if(st.length<1) throw new Error('sqrt'); const x=st.pop(); if(x<0) throw new Error('sqrtneg'); st.push(Math.sqrt(x)); }
+    else{ if(st.length<2) throw new Error('bin'); const b=st.pop(), a=st.pop(); if(t.value==='+') st.push(a+b); else if(t.value==='-') st.push(a-b); else if(t.value==='/'){ if(b===0) throw new Error('div0'); st.push(a/b);} }
   }
-  if (st.length!==1) throw new Error('eval');
-  // Round to avoid 0.30000000004
-  const val = st[0];
-  return Math.round(val*1e10)/1e10;
+  if(st.length!==1) throw new Error('eval');
+  const v=st[0]; return Math.round(v*1e10)/1e10;
 }
-
-/* ------------------ Boot ------------------ */
-(async()=>{
-  try{
-    await loadModel(['eqsym_tiny_int8.onnx','eqsym_tiny_fp16.onnx','eqsym_tiny_fp32.onnx']);
-    renderPreview();
-  }catch(e){
-    statusEl.textContent='Failed to load model. Check filenames/paths.'; console.error(e);
-  }
-})();
 </script>
 </body>
 </html>
