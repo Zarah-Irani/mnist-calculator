@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Handwritten Equation Calculator (ONNX)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+  <style>
+    :root{--bg:#0f1220;--card:#171a2b;--accent:#7c9cf5;--muted:#9aa3b2;--text:#eef1f7;--ok:#6ee7b7;}
+    *{box-sizing:border-box}
+    body{margin:0;padding:24px;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial;color:var(--text);background:radial-gradient(1200px 600px at 10% -10%, #1b2145 0%, #0f1220 55%) fixed;}
+    .wrap{max-width:1100px;margin:0 auto;display:grid;gap:18px}
+    .row{display:flex;flex-wrap:wrap;gap:16px;align-items:stretch}
+    .card{background:var(--card);border:1px solid rgba(124,156,245,.2);border-radius:16px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    .left{flex:1 1 460px;min-width:320px}
+    .right{flex:1 1 420px;min-width:300px}
+    h1{margin:0 0 6px}
+    .muted{color:var(--muted)}
+    canvas#pad{width:360px;height:360px;max-width:100%;background:#0b0d17;border-radius:18px;border:1px dashed rgba(255,255,255,.15);touch-action:none;cursor:crosshair}
+    .mini{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px}
+    .mini canvas{width:84px;height:84px;image-rendering:pixelated;background:#0b0d17;border-radius:8px;border:1px solid rgba(255,255,255,.1)}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+    button,select,input[type="range"]{background:#101426;color:#eaf0ff;border:1px solid rgba(124,156,245,.35);padding:10px 12px;border-radius:12px;cursor:pointer;font-weight:600}
+    button:hover{border-color:var(--accent)}
+    .badge{display:inline-flex;gap:8px;align-items:center;background:#0e1326;border:1px solid rgba(124,156,245,.25);padding:6px 10px;border-radius:999px;font-size:12px}
+    #probs{display:grid;gap:6px}
+    .bar{display:grid;grid-template-columns:30px 1fr auto;align-items:center;gap:10px}
+    .track{height:10px;background:#0f1430;border-radius:999px;position:relative;overflow:hidden;border:1px solid rgba(124,156,245,.2)}
+    .fill{position:absolute;inset:0 auto 0 0;width:0%;background:linear-gradient(90deg,var(--accent),#8ef2ff)}
+    .expr{font-size:22px;background:#0b0f23;border:1px solid rgba(124,156,245,.25);padding:12px;border-radius:12px;word-break:break-all;min-height:54px}
+    .grid{display:grid;gap:10px}
+    .pill{padding:6px 10px;border:1px solid rgba(124,156,245,.3);border-radius:999px;background:#0f1430}
+    .ok{color:var(--ok)}
+    .note{font-size:12px;color:var(--muted)}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="row">
+    <div style="flex:1 1 auto">
+      <div class="badge">ONNX Runtime Web • <span id="backend">loading…</span></div>
+      <h1>Handwritten Equation Calculator</h1>
+      <div class="muted">Draw one symbol at a time (digits 0–9, +, −, /, √, (, )) → append to the expression → evaluate.</div>
+    </div>
+    <div class="card" style="display:flex;gap:8px;align-items:center">
+      <label for="modelSel" class="muted">Model:</label>
+      <select id="modelSel">
+        <option>eqsym_tiny_int8.onnx</option>
+        <option>eqsym_tiny_fp16.onnx</option>
+        <option>eqsym_tiny_fp32.onnx</option>
+      </select>
+      <button id="reload">Load</button>
+      <span id="status" class="muted">loading model…</span>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="left card">
+      <h3>Draw a symbol</h3>
+      <canvas id="pad" width="360" height="360"></canvas>
+      <div class="controls">
+        <button id="predict">Predict</button>
+        <button id="append">Append</button>
+        <button id="clear">Clear</button>
+        <button id="undo">Undo</button>
+        <label class="mini">Brush <input id="brush" type="range" min="8" max="36" step="1" value="24" /></label>
+      </div>
+      <div class="mini" style="margin-top:10px">
+        <canvas id="thumb" width="28" height="28" title="28×28 preview"></canvas>
+        28×28 preview (what the model sees)
+      </div>
+      <div class="note" style="margin-top:8px">Tip: write thick & centered. We normalize like MNIST (white ink on black background).</div>
+    </div>
+
+    <div class="right card grid">
+      <div>
+        <h3>Top Prediction</h3>
+        <div class="badge">Token: <span id="top" class="ok">—</span></div>
+      </div>
+      <div id="probs"></div>
+
+      <div>
+        <h3>Expression</h3>
+        <div id="expr" class="expr"></div>
+        <div class="controls">
+          <button id="evaluate">Evaluate</button>
+          <button id="backspace">Backspace</button>
+          <button id="clearExpr">Clear Expression</button>
+        </div>
+        <div class="grid">
+          <div class="pill">Result: <span id="result">—</span></div>
+          <div class="note">Supported: digits 0–9, +, −, /, √, (, ). Use √(x) or √9. Division uses “/”.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ------------------ Canvas ------------------ */
+const pad = document.getElementById('pad');
+const ctx = pad.getContext('2d');
+const thumb = document.getElementById('thumb').getContext('2d');
+const statusEl = document.getElementById('status');
+const backendEl = document.getElementById('backend');
+const modelSel = document.getElementById('modelSel');
+const topEl = document.getElementById('top');
+const probsEl = document.getElementById('probs');
+const exprEl = document.getElementById('expr');
+const resultEl = document.getElementById('result');
+
+function resetCanvas(){ ctx.fillStyle = "#000"; ctx.fillRect(0,0,pad.width,pad.height); }
+resetCanvas();
+
+let drawing=false, last=null, brush=24, undoStack=[];
+function getPos(e){
+  const r = pad.getBoundingClientRect();
+  const p = e.touches ? e.touches[0] : e;
+  return { x: (p.clientX - r.left) * (pad.width/r.width),
+           y: (p.clientY - r.top) * (pad.height/r.height) };
+}
+function stroke(a,b){
+  ctx.lineJoin="round"; ctx.lineCap="round"; ctx.strokeStyle="#fff"; ctx.lineWidth=brush;
+  ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+}
+function pushUndo(){ undoStack.push(ctx.getImageData(0,0,pad.width,pad.height)); if(undoStack.length>20) undoStack.shift(); }
+function popUndo(){ if(!undoStack.length) return; ctx.putImageData(undoStack.pop(),0,0); renderPreview(); }
+
+pad.addEventListener('mousedown',(e)=>{drawing=true; last=getPos(e); pushUndo(); stroke(last,last); e.preventDefault();});
+window.addEventListener('mousemove',(e)=>{if(!drawing) return; const p=getPos(e); stroke(last,p); last=p; e.preventDefault();});
+window.addEventListener('mouseup',()=>{drawing=false; renderPreview();});
+pad.addEventListener('touchstart',(e)=>{drawing=true; last=getPos(e); pushUndo(); stroke(last,last); e.preventDefault();},{passive:false});
+pad.addEventListener('touchmove',(e)=>{if(!drawing) return; const p=getPos(e); stroke(last,p); last=p; e.preventDefault();},{passive:false});
+pad.addEventListener('touchend',()=>{drawing=false; renderPreview();});
+
+document.getElementById('clear').onclick=()=>{resetCanvas(); renderPreview();};
+document.getElementById('undo').onclick =()=>{popUndo();};
+document.getElementById('brush').oninput=(e)=>{brush=+e.target.value;};
+
+/* ------------------ Model Loading ------------------ */
+let session=null, labels=null;
+async function loadLabels(){ const r = await fetch('labels.json'); labels = await r.json(); }
+async function tryLoad(paths){
+  for(const p of paths){
+    try{
+      statusEl.textContent = `loading ${p}…`;
+      session = await ort.InferenceSession.create(p, {executionProviders:['webgpu','wasm'], graphOptimizationLevel:'all'});
+      statusEl.textContent = `model ready ✅ (${p})`;
+      return p;
+    }catch(e){ console.warn('Failed to load', p, e); }
+  }
+  throw new Error('No model could be loaded.');
+}
+async function loadModel(preferred){ 
+  await loadLabels();
+  const used = await tryLoad(preferred);
+  backendEl.textContent = (navigator.gpu ? 'WebGPU' : 'WASM') + ' • ' + used;
+}
+document.getElementById('reload').onclick = ()=> loadModel([modelSel.value]);
+
+/* ------------------ Preprocess / Predict ------------------ */
+function renderPreview(){
+  const s = document.createElement('canvas'); s.width=28; s.height=28;
+  s.getContext('2d').drawImage(pad,0,0,28,28);
+  thumb.clearRect(0,0,28,28); thumb.drawImage(s,0,0);
+}
+function preprocess(){
+  const s = document.createElement('canvas'); s.width=28; s.height=28;
+  const sctx = s.getContext('2d'); sctx.drawImage(pad,0,0,28,28);
+  const d = sctx.getImageData(0,0,28,28).data;
+  const mean=0.1307, std=0.3081;
+  const arr = new Float32Array(1*1*28*28);
+  for(let i=0;i<28*28;i++){
+    const r=d[i*4], g=d[i*4+1], b=d[i*4+2];
+    let v=(r+g+b)/3/255; // white ink on black bg
+    arr[i]=(v-mean)/std;
+  }
+  return new ort.Tensor('float32', arr, [1,1,28,28]);
+}
+function softmax(logits){
+  const m = Math.max(...logits);
+  const ex = logits.map(v=>Math.exp(v-m));
+  const s = ex.reduce((a,b)=>a+b,0);
+  return ex.map(v=>v/s);
+}
+async function predictOnce(){
+  if(!session){ alert('Model not loaded yet'); return; }
+  const input = preprocess();
+  const out = await session.run({[session.inputNames[0]]:input});
+  const logits = Array.from(out[session.outputNames[0]].data);
+  const probs = softmax(logits);
+  const bestI = probs.indexOf(Math.max(...probs));
+  const token = labels[String(bestI)] ?? '?';
+  showProbs(probs, token);
+  return {token, probs};
+}
+function showProbs(probs, token){
+  topEl.textContent = `${token} (${(Math.max(...probs)*100).toFixed(1)}%)`;
+  probsEl.innerHTML='';
+  for(let i=0;i<probs.length;i++){
+    const row=document.createElement('div'); row.className='bar';
+    const lab=document.createElement('div'); lab.textContent = labels[String(i)];
+    const track=document.createElement('div'); track.className='track';
+    const fill=document.createElement('div'); fill.className='fill'; fill.style.width=(probs[i]*100).toFixed(1)+'%';
+    track.appendChild(fill);
+    const pct=document.createElement('div'); pct.textContent=(probs[i]*100).toFixed(1)+'%';
+    row.appendChild(lab); row.appendChild(track); row.appendChild(pct);
+    probsEl.appendChild(row);
+  }
+}
+
+/* ------------------ Expression build & evaluation ------------------ */
+let tokens = [];
+function renderExpr(){ exprEl.textContent = tokens.join(''); }
+function appendToken(t){
+  // merge consecutive digits into a number string
+  if (tokens.length && /[0-9]/.test(t) && /^[0-9]+$/.test(tokens[tokens.length-1])) {
+    tokens[tokens.length-1] += t;
+  } else {
+    tokens.push(t);
+  }
+  renderExpr();
+}
+
+document.getElementById('predict').onclick = async()=>{ await predictOnce(); };
+document.getElementById('append').onclick  = async()=>{
+  const p = await predictOnce(); if(!p) return;
+  appendToken(p.token);
+  resetCanvas(); renderPreview();
+};
+document.getElementById('backspace').onclick = ()=>{
+  if(!tokens.length) return;
+  const last = tokens[tokens.length-1];
+  if (/^[0-9]+$/.test(last) && last.length>1) tokens[tokens.length-1]=last.slice(0,-1);
+  else tokens.pop();
+  renderExpr();
+};
+document.getElementById('clearExpr').onclick=()=>{ tokens=[]; renderExpr(); resultEl.textContent='—'; };
+document.getElementById('evaluate').onclick = ()=>{ 
+  try{ const val = evaluateTokens(tokens); resultEl.textContent = String(val); }
+  catch(e){ resultEl.textContent = 'Error'; console.error(e); }
+};
+
+/* --- Safe evaluator: shunting-yard (supports + - /, parentheses, unary √) --- */
+function evaluateTokens(toks){
+  if (!toks.length) throw new Error('empty');
+  // Convert tokens to a flat list, validate
+  const valid = new Set(['+','-','/','√','(',')']);
+  const outTokens = [];
+  toks.forEach(t=>{
+    if (/^[0-9]+$/.test(t)) outTokens.push({type:'num', value: parseFloat(t)});
+    else if (valid.has(t)) outTokens.push({type:'op', value:t});
+    else throw new Error('bad token '+t);
+  });
+
+  // Shunting-yard to RPN
+  const prec = {'+':1,'-':1,'/':2,'√':3};                 // √ highest
+  const rightAssoc = new Set(['√']);                      // unary prefix
+  const output=[]; const opstack=[];
+  for (let i=0;i<outTokens.length;i++){
+    const tk = outTokens[i];
+    if (tk.type==='num') output.push(tk);
+    else if (tk.value==='(') opstack.push(tk.value);
+    else if (tk.value===')'){
+      while(opstack.length && opstack[opstack.length-1]!=='(') output.push({type:'op', value: opstack.pop()});
+      if(!opstack.length) throw new Error('mismatch )');
+      opstack.pop(); // pop '('
+    } else {
+      // operator
+      const o1 = tk.value;
+      while(opstack.length){
+        const o2 = opstack[opstack.length-1];
+        if (o2==='(') break;
+        if ((!rightAssoc.has(o1) && prec[o1] <= prec[o2]) || (rightAssoc.has(o1) && prec[o1] < prec[o2])) {
+          output.push({type:'op', value: opstack.pop()});
+        } else break;
+      }
+      opstack.push(o1);
+    }
+  }
+  while(opstack.length){
+    const o=opstack.pop();
+    if (o==='('||o===')') throw new Error('mismatch');
+    output.push({type:'op', value:o});
+  }
+
+  // Evaluate RPN
+  const st=[];
+  for(const t of output){
+    if (t.type==='num') st.push(t.value);
+    else if (t.value==='√'){
+      if (st.length<1) throw new Error('sqrt stack');
+      const x = st.pop();
+      if (x < 0) throw new Error('sqrt negative');
+      st.push(Math.sqrt(x));
+    } else {
+      if (st.length<2) throw new Error('binop stack');
+      const b = st.pop(), a = st.pop();
+      if (t.value==='+') st.push(a+b);
+      else if (t.value==='-') st.push(a-b);
+      else if (t.value==='/') { if (b===0) throw new Error('div0'); st.push(a/b); }
+    }
+  }
+  if (st.length!==1) throw new Error('eval');
+  // Round to avoid 0.30000000004
+  const val = st[0];
+  return Math.round(val*1e10)/1e10;
+}
+
+/* ------------------ Boot ------------------ */
+(async()=>{
+  try{
+    await loadModel(['eqsym_tiny_int8.onnx','eqsym_tiny_fp16.onnx','eqsym_tiny_fp32.onnx']);
+    renderPreview();
+  }catch(e){
+    statusEl.textContent='Failed to load model. Check filenames/paths.'; console.error(e);
+  }
+})();
+</script>
+</body>
+</html>
