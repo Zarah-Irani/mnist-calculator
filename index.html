@@ -14,8 +14,8 @@
     .card{background:var(--card);border:1px solid rgba(124,156,245,.2);border-radius:16px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
     h1{margin:0 0 6px}
     .muted{color:var(--muted)}
-    canvas#pad{width:720px;height:180px;max-width:100%;background:#0b0d17;border-radius:18px;border:1px dashed rgba(255,255,255,.15);touch-action:none;cursor:crosshair}
-    .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+    canvas#pad{width:720px;height:180px;max-width:100%;background:#000;border-radius:18px;border:1px dashed rgba(255,255,255,.15);touch-action:none;cursor:crosshair}
+    .controls{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;align-items:center}
     button,select,input[type="range"]{background:#101426;color:#eaf0ff;border:1px solid rgba(124,156,245,.35);padding:10px 12px;border-radius:12px;cursor:pointer;font-weight:600}
     button:hover{border-color:var(--accent)}
     .output{display:grid;gap:10px}
@@ -24,6 +24,7 @@
     .grid{display:grid;gap:10px}
     .mini{font-size:12px;color:var(--muted)}
     .dbg{display:flex;flex-wrap:wrap;gap:8px}
+    .dbg .tile{display:flex;flex-direction:column;align-items:center;gap:4px}
     .dbg canvas{width:56px;height:56px;image-rendering:pixelated;background:#0b0d17;border-radius:8px;border:1px solid rgba(255,255,255,.1)}
   </style>
 </head>
@@ -43,9 +44,10 @@
         <button id="clear">Clear</button>
         <label>Brush <input id="brush" type="range" min="8" max="36" step="1" value="24" /></label>
         <label><input type="checkbox" id="showBoxes" checked /> Show char boxes</label>
+        <label><input type="checkbox" id="invert" /> Invert colors</label>
         <span id="status" class="muted">loading model…</span>
       </div>
-      <div class="mini">Tip: write thick & centered baseline. Supported: digits 0–9, +, −, /, √, ( ).</div>
+      <div class="mini">Tip: write white ink on black, thick & centered baseline. Supported: digits 0–9, +, −, /, √, ( ).</div>
     </div>
 
     <div class="card output" style="flex:1 1 360px;min-width:300px">
@@ -78,11 +80,10 @@ window.addEventListener('mouseup',()=>drawing=false);
 pad.addEventListener('touchstart',e=>{drawing=true; last=pos(e); stroke(last,last); e.preventDefault()},{passive:false});
 pad.addEventListener('touchmove',e=>{ if(!drawing) return; const p=pos(e); stroke(last,p); last=p; e.preventDefault()},{passive:false});
 pad.addEventListener('touchend',()=>drawing=false);
-
 document.getElementById('clear').onclick = ()=> resetCanvas();
 document.getElementById('brush').oninput = e => brush=+e.target.value;
 
-/* ========== Model load ========== */
+/* ========== Model & labels ========== */
 let session=null, labels=null;
 const statusEl = document.getElementById('status');
 async function loadLabels(){ const r=await fetch('labels.json'); labels=await r.json(); }
@@ -99,22 +100,18 @@ async function tryLoad(paths){
 }
 (async()=>{
   await loadLabels();
-  await tryLoad(['eqsym_tiny_int8.onnx','eqsym_tiny_fp16.onnx','eqsym_tiny_fp32.onnx']);
+  // Prefer FP16 for accuracy, then INT8, then FP32
+  await tryLoad(['eqsym_tiny_fp16.onnx','eqsym_tiny_int8.onnx','eqsym_tiny_fp32.onnx']);
 })();
 
-/* ========== Segmentation (one pass over whole canvas) ========== */
-/* Steps:
-   1) binarize image to white ink on black
-   2) find connected components (8-connected)
-   3) build bounding boxes, sorted left->right
-   4) pad each box, resize to 28x28, normalize like MNIST
-*/
-function binarize(imgData, thresh=0.5){
+/* ========== Segmentation helpers ========== */
+function binarize(imgData, thresh=0.28, invert=false){
   const {width:W, height:H, data} = imgData;
   const bin = new Uint8Array(W*H);
   for(let i=0;i<W*H;i++){
     const r=data[i*4], g=data[i*4+1], b=data[i*4+2];
-    const v=(r+g+b)/3/255; // 0..1, white=ink
+    let v=(r+g+b)/3/255;            // brightness 0..1 (white=1)
+    if(invert) v = 1 - v;
     bin[i] = v>thresh ? 1 : 0;
   }
   return {W,H,bin};
@@ -124,100 +121,96 @@ function components({W,H,bin}){
   const boxes = [];
   let lab=0;
   const qx=new Int32Array(W*H), qy=new Int32Array(W*H);
-  for(let y=0;y<H;y++){
-    for(let x=0;x<W;x++){
-      const idx=y*W+x;
-      if(!bin[idx] || labels[idx]!==-1) continue;
-      // BFS
-      let head=0,tail=0;
-      qx[tail]=x; qy[tail]=y; tail++;
-      labels[idx]=lab;
-      let minx=x,maxx=x,miny=y,maxy=y, area=0;
-      while(head<tail){
-        const cx=qx[head], cy=qy[head]; head++; area++;
-        // neighbors 8-connect
-        for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
-          if(dx===0&&dy===0) continue;
-          const nx=cx+dx, ny=cy+dy;
-          if(nx<0||ny<0||nx>=W||ny>=H) continue;
-          const nidx=ny*W+nx;
-          if(bin[nidx] && labels[nidx]===-1){
-            labels[nidx]=lab; qx[tail]=nx; qy[tail]=ny; tail++;
-            if(nx<minx)minx=nx; if(nx>maxx)maxx=nx; if(ny<miny)miny=ny; if(ny>maxy)maxy=ny;
-          }
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++){
+    const idx=y*W+x;
+    if(!bin[idx] || labels[idx]!==-1) continue;
+    let head=0,tail=0; qx[tail]=x; qy[tail]=y; tail++; labels[idx]=lab;
+    let minx=x,maxx=x,miny=y,maxy=y, area=0;
+    while(head<tail){
+      const cx=qx[head], cy=qy[head]; head++; area++;
+      for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+        if(dx===0&&dy===0) continue;
+        const nx=cx+dx, ny=cy+dy;
+        if(nx<0||ny<0||nx>=W||ny>=H) continue;
+        const nidx=ny*W+nx;
+        if(bin[nidx] && labels[nidx]===-1){
+          labels[nidx]=lab; qx[tail]=nx; qy[tail]=ny; tail++;
+          if(nx<minx)minx=nx; if(nx>maxx)maxx=nx; if(ny<miny)miny=ny; if(ny>maxy)maxy=ny;
         }
       }
-      // filter tiny specks
-      if(area>=30){
-        boxes.push({x:minx,y:miny,w:maxx-minx+1,h:maxy-miny+1,area});
-        lab++;
-      }
     }
+    if(area>=30) boxes.push({x:minx,y=miny,w:maxx-minx+1,h:maxy-miny+1,area});
+    lab++;
   }
-  // merge boxes that are too close horizontally (handles broken strokes)
   boxes.sort((a,b)=>a.x-b.x);
+  // Merge close neighbors horizontally (bridges broken strokes)
   const merged=[];
   for(const b of boxes){
     if(!merged.length){ merged.push(b); continue; }
     const prev=merged[merged.length-1];
     const gap = b.x - (prev.x+prev.w);
     const overlapY = !(b.y > prev.y+prev.h || prev.y > b.y+b.h);
-    if(gap<=8 && overlapY){ // small gap -> merge
-      const nx=Math.min(prev.x,b.x);
-      const ny=Math.min(prev.y,b.y);
-      const rx=Math.max(prev.x+prev.w, b.x+b.w);
-      const ry=Math.max(prev.y+prev.h, b.y+b.h);
+    if(gap<=10 && overlapY){ // looser merge than before
+      const nx=Math.min(prev.x,b.x), ny=Math.min(prev.y,b.y);
+      const rx=Math.max(prev.x+prev.w, b.x+b.w), ry=Math.max(prev.y+prev.h, b.y+b.h);
       prev.x=nx; prev.y=ny; prev.w=rx-nx; prev.h=ry-ny;
-    }else{
-      merged.push(b);
-    }
+    }else merged.push(b);
   }
   return merged;
 }
-function cropTo28(imgData, box, pad=6){
+function cropTo28(imgData, box, pad=8){
   const {width:W, height:H, data} = imgData;
-  const sx = Math.max(0, box.x - pad);
-  const sy = Math.max(0, box.y - pad);
-  const ex = Math.min(W, box.x + box.w + pad);
-  const ey = Math.min(H, box.y + box.h + pad);
+  const sx = Math.max(0, box.x - pad), sy = Math.max(0, box.y - pad);
+  const ex = Math.min(W, box.x + box.w + pad), ey = Math.min(H, box.y + box.h + pad);
   const cw = ex - sx, ch = ey - sy;
 
-  // put into a temp canvas, then letterbox to 28x28
   const tmp=document.createElement('canvas'); tmp.width=cw; tmp.height=ch;
-  const tctx=tmp.getContext('2d');
+  const tctx=tmp.getContext('2d', {willReadFrequently:true});
   const src = new ImageData(new Uint8ClampedArray(cw*ch*4), cw, ch);
-  for(let y=0;y<ch;y++){
-    for(let x=0;x<cw;x++){
-      const di = ((sy+y)*W + (sx+x)) * 4;
-      const oi = (y*cw + x)*4;
-      src.data[oi]   = data[di];
-      src.data[oi+1] = data[di+1];
-      src.data[oi+2] = data[di+2];
-      src.data[oi+3] = 255;
-    }
+  for(let y=0;y<ch;y++) for(let x=0;x<cw;x++){
+    const di=((sy+y)*W + (sx+x))*4, oi=(y*cw+x)*4;
+    src.data[oi]=data[di]; src.data[oi+1]=data[di+1]; src.data[oi+2]=data[di+2]; src.data[oi+3]=255;
   }
   tctx.putImageData(src,0,0);
 
-  // letterbox
   const dst=document.createElement('canvas'); dst.width=28; dst.height=28;
   const dctx=dst.getContext('2d');
   dctx.fillStyle="#000"; dctx.fillRect(0,0,28,28);
+  dctx.imageSmoothingEnabled = false; // IMPORTANT: crisp downscale
+
   const scale = Math.min(28/cw, 28/ch);
-  const rw = Math.max(1, Math.floor(cw*scale));
-  const rh = Math.max(1, Math.floor(ch*scale));
-  const dx = Math.floor((28-rw)/2);
-  const dy = Math.floor((28-rh)/2);
-  dctx.imageSmoothingEnabled = true;
+  const rw = Math.max(1, Math.floor(cw*scale)), rh = Math.max(1, Math.floor(ch*scale));
+  const dx = Math.floor((28-rw)/2), dy = Math.floor((28-rh)/2);
   dctx.drawImage(tmp, 0,0,cw,ch, dx,dy,rw,rh);
+
+  centerOfMassShift(dst);  // MNIST-like centering
   return dst;
+}
+function centerOfMassShift(canvas){
+  const g = canvas.getContext('2d');
+  const d = g.getImageData(0,0,28,28);
+  let sum=0,sx=0,sy=0;
+  for(let y=0;y<28;y++)for(let x=0;x<28;x++){
+    const i=(y*28+x)*4;
+    const v=(d.data[i]+d.data[i+1]+d.data[i+2])/3; // 0..255, white ink
+    sum+=v; sx+=x*v; sy+=y*v;
+  }
+  if(sum<1) return;
+  const cx=sx/sum, cy=sy/sum;
+  const dx=Math.round(14-cx), dy=Math.round(14-cy);
+  if(dx===0 && dy===0) return;
+  const tmp=document.createElement('canvas'); tmp.width=28; tmp.height=28;
+  tmp.getContext('2d').drawImage(canvas,dx,dy);
+  g.clearRect(0,0,28,28); g.drawImage(tmp,0,0);
 }
 function tensorFrom28(canvas28){
   const mean=0.1307, std=0.3081;
+  const inv = document.getElementById('invert').checked;
   const g = canvas28.getContext('2d').getImageData(0,0,28,28).data;
   const arr = new Float32Array(1*1*28*28);
   for(let i=0;i<28*28;i++){
-    const r=g[i*4], b=g[i*4+2], y=g[i*4+1];
-    let v=(r+y+b)/3/255;               // 0..1 white ink
+    const r=g[i*4], y=g[i*4+1], b=g[i*4+2];
+    let v=(r+y+b)/3/255; if(inv) v=1-v;
     arr[i]=(v-mean)/std;
   }
   return new ort.Tensor('float32', arr, [1,1,28,28]);
@@ -232,22 +225,20 @@ const showBoxes = document.getElementById('showBoxes');
 
 document.getElementById('compute').onclick = async ()=>{
   if(!session){ alert('Model not ready'); return; }
-  // 1) get image, binarize, components
   const img = ctx.getImageData(0,0,pad.width,pad.height);
-  const bin = binarize(img, 0.35);                // threshold
-  const boxes = components(bin);                   // left→right
-  // optional draw boxes
-  ctx.putImageData(img,0,0); // reset
+  const bin = binarize(img, 0.28, document.getElementById('invert').checked);
+  const boxes = components(bin);
+  // draw boxes (overlay)
   if(showBoxes.checked){
+    ctx.putImageData(img,0,0);
     ctx.save(); ctx.strokeStyle="#44f1a8aa"; ctx.lineWidth=3;
     for(const b of boxes){ ctx.strokeRect(b.x,b.y,b.w,b.h); }
     ctx.restore();
   }
 
-  // 2) classify each box
   charsEl.innerHTML=''; let tokens=[];
   for(const b of boxes){
-    const c28 = cropTo28(img, b, 6);
+    const c28 = cropTo28(img, b, 8);
     const tensor = tensorFrom28(c28);
     const out = await session.run({[session.inputNames[0]]:tensor});
     const logits = Array.from(out[session.outputNames[0]].data);
@@ -255,27 +246,23 @@ document.getElementById('compute').onclick = async ()=>{
     const best = probs.indexOf(Math.max(...probs));
     const label = labels[String(best)] ?? '?';
 
-    // merge consecutive digits into multi-digit numbers
     if(tokens.length && /^[0-9]+$/.test(tokens[tokens.length-1]) && /^[0-9]$/.test(label)){
       tokens[tokens.length-1] += label;
     } else {
       tokens.push(label);
     }
 
-    // show tiny debug tile
-    const tile=document.createElement('div');
+    // show small tile + label
+    const tile = document.createElement('div'); tile.className='tile';
     const canv=document.createElement('canvas'); canv.width=28; canv.height=28;
     canv.getContext('2d').drawImage(c28,0,0);
-    tile.appendChild(canv);
     const cap=document.createElement('div'); cap.className='mini'; cap.textContent=label;
-    charsEl.appendChild(canv); charsEl.appendChild(cap);
+    tile.appendChild(canv); tile.appendChild(cap); charsEl.appendChild(tile);
   }
 
-  // 3) expression string
   const exprStr = tokens.join('');
   exprEl.textContent = exprStr || '—';
 
-  // 4) evaluate safely
   try{
     const value = evaluateTokens(tokens);
     ansEl.textContent = String(value);
@@ -285,7 +272,7 @@ document.getElementById('compute').onclick = async ()=>{
   }
 };
 
-/* --- Safe evaluator: shunting-yard (supports + - /, parentheses, unary √) --- */
+/* --- Safe evaluator: + - / ( ) and unary √ --- */
 function evaluateTokens(toks){
   if(!toks.length) throw new Error('empty');
   const valid = new Set(['+','-','/','√','(',')']);
@@ -322,7 +309,7 @@ function evaluateTokens(toks){
     else{ if(st.length<2) throw new Error('bin'); const b=st.pop(), a=st.pop(); if(t.value==='+') st.push(a+b); else if(t.value==='-') st.push(a-b); else if(t.value==='/'){ if(b===0) throw new Error('div0'); st.push(a/b);} }
   }
   if(st.length!==1) throw new Error('eval');
-  const v=st[0]; return Math.round(v*1e10)/1e10;
+  return Math.round(st[0]*1e10)/1e10;
 }
 </script>
 </body>
